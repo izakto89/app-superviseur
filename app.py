@@ -1,112 +1,70 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-import uuid
+import plotly.express as px
+from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
+st.title("📊 Superviseur - Pilotage Atelier")
 
-st.title("🛠️ Pilotage Atelier - Suivi OFs")
+# ---- Upload OFs
+st.header("📥 Chargement des OFs")
+uploaded_file = st.file_uploader("Importer le fichier OFs (Excel)", type=["xlsx"])
+if uploaded_file:
+    df_ofs = pd.read_excel(uploaded_file)
+    st.success("✅ OFs chargés avec succès")
+    st.dataframe(df_ofs)
 
-# Stockage des données locales (temporaire - pas base partagée encore)
-if "of_en_cours" not in st.session_state:
-    st.session_state.of_en_cours = None
-if "declarations" not in st.session_state:
-    st.session_state.declarations = []
+# ---- Calendrier d'ouverture poste
+st.header("🗓️ Calendrier d'ouverture poste (ex. MONTFB)")
+jours = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+calendrier = {}
+cols = st.columns(len(jours))
+for i, jour in enumerate(jours):
+    calendrier[jour] = cols[i].number_input(f"{jour}", min_value=0.0, max_value=24.0, value=8.0, step=0.5, format="%.1f")
 
-# Onglets : Opérateur / Superviseur
-onglet = st.sidebar.radio("👥 Choisir le mode :", ["Opérateur", "Superviseur"])
+# ---- Simuler un planning prévisionnel simple
+if uploaded_file:
+    st.header("📅 Planning prévisionnel (simulation)")
 
-# ------------------------------
-# 🟥 ONGLET OPÉRATEUR
-# ------------------------------
-if onglet == "Opérateur":
-    st.subheader("👷 Interface Opérateur")
+    df_gantt = df_ofs.copy()
+    date_debut = datetime.today().replace(hour=8, minute=0, second=0, microsecond=0)
 
-    nom_operateur = st.text_input("👤 Ton prénom :", "")
-    
-    if nom_operateur:
-        st.markdown(f"📅 Date : **{datetime.today().strftime('%A %d %B %Y')}**")
-        uploaded_file = st.file_uploader("📤 Charger le fichier des OFs", type="xlsx")
+    heures_par_jour = [calendrier[jour] for jour in jours]
+    date_actuelle = date_debut
+    planifie = []
 
-        if uploaded_file:
-            df_of = pd.read_excel(uploaded_file)
-            df_of = df_of.sort_values("Priorité", ascending=False)
-            st.dataframe(df_of, use_container_width=True)
+    for _, row in df_gantt.iterrows():
+        temps_rest = row["Temps théorique (min)"]
+        while temps_rest > 0:
+            jour_index = date_actuelle.weekday()
+            dispo = heures_par_jour[jour_index] * 60
+            if dispo == 0:
+                date_actuelle += timedelta(days=1)
+                continue
 
-            selected_of = st.selectbox("📌 Sélectionne un OF à lancer :", df_of["N°OF"].unique())
+            temps_of = min(temps_rest, dispo)
+            planifie.append({
+                "N°OF": row["N°OF"],
+                "Début": date_actuelle,
+                "Fin": date_actuelle + timedelta(minutes=temps_of),
+                "Produit": row["Produit"]
+            })
+            date_actuelle += timedelta(minutes=temps_of)
+            temps_rest -= temps_of
 
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✅ Début OF"):
-                    st.session_state.of_en_cours = {
-                        "n_of": selected_of,
-                        "debut": datetime.now(),
-                        "operateur": nom_operateur,
-                        "arrets": []
-                    }
-            with col2:
-                if st.button("🏁 Fin OF") and st.session_state.of_en_cours:
-                    fin = datetime.now()
-                    of_data = st.session_state.of_en_cours
-                    duree = round((fin - of_data["debut"]).total_seconds() / 60, 2)
-                    of_data["fin"] = fin
-                    of_data["duree_totale_min"] = duree
-                    st.session_state.declarations.append(of_data)
-                    st.success(f"✅ OF {of_data['n_of']} terminé en {duree} minutes.")
-                    st.session_state.of_en_cours = None
+    df_plan = pd.DataFrame(planifie)
 
-        if st.session_state.of_en_cours:
-            of_data = st.session_state.of_en_cours
-            st.markdown(f"### ▶️ OF en cours : `{of_data['n_of']}` lancé à `{of_data['debut'].strftime('%H:%M:%S')}`")
-            st.markdown(f"👷 Opérateur : **{of_data['operateur']}**")
+    fig = px.timeline(df_plan, x_start="Début", x_end="Fin", y="N°OF", color="Produit")
+    fig.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown("### 🛑 Déclaration d’arrêts")
-            col1, col2, col3, col4, col5 = st.columns(5)
-            arrets = ["Pause", "Qualité", "Manque de charge", "Formation", "Absence personnel"]
-
-            for i, nom in enumerate(arrets):
-                if st.button(f"🚨 {nom}"):
-                    horodatage = datetime.now().strftime('%H:%M:%S')
-                    commentaire = st.text_input(f"📝 Commentaire pour l’arrêt : {nom}", key=f"cmt_{i}")
-                    st.session_state.of_en_cours["arrets"].append({
-                        "type": nom,
-                        "heure": horodatage,
-                        "commentaire": commentaire
-                    })
-                    st.warning(f"🛑 Arrêt '{nom}' déclaré à {horodatage}")
-
-# ------------------------------
-# 🟦 ONGLET SUPERVISEUR
-# ------------------------------
-if onglet == "Superviseur":
-    st.subheader("🧑‍💼 Interface Superviseur")
-
-    if st.session_state.declarations:
-        df_resultats = pd.DataFrame(st.session_state.declarations)
-
-        # Détailler les arrêts
-        arret_data = []
-        for of in st.session_state.declarations:
-            for a in of["arrets"]:
-                arret_data.append({
-                    "OF": of["n_of"],
-                    "Type d'arrêt": a["type"],
-                    "Heure": a["heure"],
-                    "Commentaire": a["commentaire"]
-                })
-
-        df_arrets = pd.DataFrame(arret_data)
-
-        st.markdown("### 📊 Résumé des OFs déclarés")
-        st.dataframe(df_resultats[["n_of", "operateur", "debut", "fin", "duree_totale_min"]], use_container_width=True)
-
-        st.markdown("### 📉 Pareto des arrêts")
-        if not df_arrets.empty:
-            pareto = df_arrets["Type d'arrêt"].value_counts().reset_index()
-            pareto.columns = ["Type d'arrêt", "Occurrences"]
-            st.bar_chart(pareto.set_index("Type d'arrêt"))
-            st.dataframe(df_arrets, use_container_width=True)
-        else:
-            st.info("Aucun arrêt déclaré pour le moment.")
-    else:
-        st.info("Aucune déclaration encore faite par les opérateurs.")
+# ---- Affichage planning réel (déclarations opérateurs simulées)
+st.header("📡 Planning réel (exemple)")
+try:
+    df_decl = pd.read_csv("declarations.csv", parse_dates=["debut", "fin"])
+    st.dataframe(df_decl)
+    fig2 = px.timeline(df_decl, x_start="debut", x_end="fin", y="n_of", color="operateur")
+    fig2.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig2, use_container_width=True)
+except FileNotFoundError:
+    st.warning("Aucune déclaration réelle trouvée (manque declarations.csv)")
