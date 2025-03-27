@@ -4,74 +4,76 @@ import plotly.express as px
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("🧑‍💼 Superviseur - Pilotage Atelier")
+st.title("🧑‍💼 Superviseur – Pilotage Atelier")
 
-# ==== Upload fichier OFs ====
+# ==== 1. Upload fichier OF ====
 st.header("📥 Charger le fichier des OFs")
 uploaded_file = st.file_uploader("Importer le fichier Excel des OFs", type=["xlsx"])
 
-# ==== Calendrier d'ouverture ====
-st.header("🗓️ Définir les heures d'ouverture (par jour)")
+# ==== 2. Calendrier d'ouverture ====
+st.header("🗓️ Définir les heures d'ouverture du poste par jour")
 jours = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
 calendrier = {}
 cols = st.columns(len(jours))
 for i, jour in enumerate(jours):
-    calendrier[jour] = cols[i].number_input(f"{jour}", min_value=0.0, max_value=24.0, value=8.0, step=0.5, format="%.1f")
+    calendrier[jour] = cols[i].number_input(
+        f"{jour}", min_value=0.0, max_value=24.0, value=8.0 if jour in jours[:5] else 0.0, step=0.5, format="%.1f"
+    )
 
-# ==== Planification prévisionnelle ====
+# ==== 3. Planification prévisionnelle ====
 if uploaded_file:
     st.header("📅 Planning prévisionnel (avec respect du calendrier)")
 
     df_ofs = pd.read_excel(uploaded_file)
-    df_gantt = df_ofs.copy()
-    date_debut = datetime.today().replace(hour=8, minute=0, second=0, microsecond=0)
-    heures_par_jour = [calendrier[j] for j in jours]
-    planifie = []
+    df_plan = []
+    date_depart = datetime.today().replace(hour=8, minute=0, second=0, microsecond=0)
+    heure_courante = date_depart
+    jour_index = heure_courante.weekday()
+    quota_jour = calendrier[jours[jour_index]] * 60  # en minutes
+    quota_restant = quota_jour
 
-    date_actuelle = date_debut
-    quota_restant_du_jour = heures_par_jour[date_actuelle.weekday()] * 60  # en minutes
+    for _, row in df_ofs.iterrows():
+        temps_restant = row["Temps théorique (min)"]
 
-    for _, row in df_gantt.iterrows():
-        temps_rest = row["Temps théorique (min)"]
+        while temps_restant > 0:
+            jour_index = heure_courante.weekday()
+            quota_jour = calendrier[jours[jour_index]] * 60
 
-        while temps_rest > 0:
-            jour_index = date_actuelle.weekday()
-            quota_jour = heures_par_jour[jour_index] * 60
-
-            if quota_restant_du_jour <= 0 or quota_jour == 0:
-                # Passer au jour ouvré suivant
-                date_actuelle += timedelta(days=1)
-                jour_index = date_actuelle.weekday()
-                quota_restant_du_jour = heures_par_jour[jour_index] * 60
-                date_actuelle = date_actuelle.replace(hour=8, minute=0)
+            # Passer au jour ouvré suivant si quota épuisé ou jour fermé
+            if quota_jour == 0 or quota_restant <= 0:
+                heure_courante += timedelta(days=1)
+                heure_courante = heure_courante.replace(hour=8, minute=0)
+                jour_index = heure_courante.weekday()
+                quota_jour = calendrier[jours[jour_index]] * 60
+                quota_restant = quota_jour
                 continue
 
-            # Segment planifié
-            temps_segment = min(temps_rest, quota_restant_du_jour)
-            heure_debut = date_actuelle
-            heure_fin = heure_debut + timedelta(minutes=temps_segment)
+            # Planification du segment
+            segment = min(temps_restant, quota_restant)
+            debut = heure_courante
+            fin = debut + timedelta(minutes=segment)
 
-            planifie.append({
+            df_plan.append({
                 "N°OF": row["N°OF"],
-                "Début": heure_debut,
-                "Fin": heure_fin,
+                "Début": debut,
+                "Fin": fin,
                 "Produit": row["Produit"]
             })
 
-            date_actuelle = heure_fin
-            quota_restant_du_jour -= temps_segment
-            temps_rest -= temps_segment
+            heure_courante = fin
+            quota_restant -= segment
+            temps_restant -= segment
 
-    df_plan = pd.DataFrame(planifie)
-
-    st.markdown("### 🟦 Gantt prévisionnel (ajusté au quota journalier)")
+    # Affichage Gantt
+    df_plan = pd.DataFrame(df_plan)
+    st.markdown("### 🟦 Gantt prévisionnel (avec quota journalier)")
     fig = px.timeline(df_plan, x_start="Début", x_end="Fin", y="N°OF", color="Produit", title="Planning Prévisionnel")
     fig.update_yaxes(autorange="reversed")
-    fig.update_layout(legend_title_text="Produit", height=500)
+    fig.update_layout(legend_title_text="Produit", height=500, xaxis_title="Date & Heure")
     st.plotly_chart(fig, use_container_width=True)
 
-# ==== Planning réel depuis fichier CSV ====
-st.header("📡 Planning réel des opérateurs (déclarations terrain)")
+# ==== 4. Planning réel (déclarations opérateurs) ====
+st.header("📡 Planning réel (déclarations des opérateurs)")
 
 try:
     df_decl = pd.read_csv("declarations.csv", parse_dates=["debut", "fin"])
@@ -83,4 +85,4 @@ try:
     st.plotly_chart(fig2, use_container_width=True)
 
 except FileNotFoundError:
-    st.warning("Aucun fichier de déclaration réelle trouvé (`declarations.csv`).")
+    st.info("ℹ️ Aucun fichier `declarations.csv` trouvé pour le moment.")
